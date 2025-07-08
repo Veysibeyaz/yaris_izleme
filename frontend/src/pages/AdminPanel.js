@@ -1,17 +1,44 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const AdminPanel = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [password, setPassword] = useState('');
-  const [uploadedFiles, setUploadedFiles] = useState([
-    // Demo veriler
-    { id: 1, name: 'Online_İzleme_Veri_Dosyası.csv', date: '07.07.2025 14:30', status: 'Başarılı', size: '2.3 MB' },
-    { id: 2, name: 'Üretim_Verileri_Haziran.xlsx', date: '30.06.2025 16:45', status: 'Başarılı', size: '1.8 MB' },
-    { id: 3, name: 'Performans_Raporu.csv', date: '25.06.2025 09:15', status: 'Hata', size: '934 KB' },
-  ]);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [loading, setLoading] = useState(false);
 
   // Admin şifresi (gerçek projede backend'den gelecek)
   const ADMIN_PASSWORD = 'admin123';
+
+  // Component yüklendiğinde dosya listesini çek
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchFileList();
+    }
+  }, [isAuthenticated]);
+
+  // Dosya listesini API'den çek
+  const fetchFileList = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/files');
+      if (response.ok) {
+        const data = await response.json();
+        
+        // API'den gelen veriyi frontend formatına çevir
+        const formattedFiles = data.files.map(file => ({
+          id: file.id,
+          name: file.name,
+          date: new Date(file.uploadDate).toLocaleString('tr-TR'),
+          status: file.status === 'processed' ? 'Başarılı' : 'Hata',
+          size: file.size,
+          rowCount: file.rowCount
+        }));
+        
+        setUploadedFiles(formattedFiles);
+      }
+    } catch (error) {
+      console.error('Dosya listesi alınamadı:', error);
+    }
+  };
 
   const handleLogin = () => {
     if (password === ADMIN_PASSWORD) {
@@ -23,32 +50,73 @@ const AdminPanel = () => {
     }
   };
 
-  const handleFileUpload = (event) => {
+  const handleFileUpload = async (event) => {
     const file = event.target.files[0];
-    if (file) {
-      // Dosya tipini kontrol et
-      const allowedTypes = ['.xlsx', '.xls', '.csv'];
-      const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+    if (!file) return;
+
+    console.log('📁 Dosya seçildi:', file.name);
+
+    // Dosya tipini kontrol et
+    const allowedTypes = ['.xlsx', '.xls', '.csv'];
+    const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+    
+    if (!allowedTypes.includes(fileExtension)) {
+      alert('Sadece Excel (.xlsx, .xls) ve CSV dosyaları yükleyebilirsiniz!');
+      return;
+    }
+
+    // Upload işlemi başladı
+    setLoading(true);
+
+    // FormData oluştur
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      console.log('📤 Dosya backend\'e gönderiliyor...');
       
-      if (!allowedTypes.includes(fileExtension)) {
-        alert('Sadece Excel (.xlsx, .xls) ve CSV dosyaları yükleyebilirsiniz!');
-        return;
+      // Backend'e gönder
+      const response = await fetch('http://localhost:5000/api/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP Error: ${response.status}`);
       }
 
-      // Yeni dosyayı listeye ekle
-      const newFile = {
-        id: Date.now(),
-        name: file.name,
-        date: new Date().toLocaleString('tr-TR'),
-        status: 'Başarılı',
-        size: (file.size / (1024 * 1024)).toFixed(1) + ' MB'
-      };
+      const result = await response.json();
       
-      setUploadedFiles([newFile, ...uploadedFiles]);
+      if (result.success) {
+        console.log('✅ Upload başarılı:', result);
+        
+        // Dosya listesini yenile
+        fetchFileList();
+        
+        // Detaylı başarı mesajı
+        alert(`🎉 ${file.name} başarıyla yüklendi ve işlendi!\n\n` +
+              `📊 İşlenen satır sayısı: ${result.file.rowCount}\n` +
+              `📈 Dashboard otomatik güncellendi!\n\n` +
+              `Yeni Dashboard İstatistikleri:\n` +
+              `• Toplam Üretim: ${result.stats.totalProduction.toLocaleString('tr-TR')}\n` +
+              `• Makina Performansı: ${result.stats.machinePerformance}%\n` +
+              `• Aktif Operatör: ${result.stats.activeOperators}\n` +
+              `• Beklemede: ${result.stats.pendingOrders}\n\n` +
+              `Ana sayfayı yenileyin ve değişiklikleri görün!`);
+        
+      } else {
+        throw new Error(result.message || 'Upload hatası');
+      }
       
-      // Başarı mesajı
-      alert(`${file.name} başarıyla yüklendi! Dashboard güncellenecek.`);
-      
+    } catch (error) {
+      console.error('❌ Upload hatası:', error);
+      alert(`❌ Dosya yükleme hatası:\n\n${error.message}\n\n` +
+            `Olası çözümler:\n` +
+            `• Backend server'ın çalıştığından emin olun (localhost:5000)\n` +
+            `• Dosya formatının doğru olduğunu kontrol edin\n` +
+            `• Dosya boyutunun 10MB'dan küçük olduğunu kontrol edin`);
+    } finally {
+      setLoading(false);
       // Input'u temizle
       event.target.value = '';
     }
@@ -57,6 +125,7 @@ const AdminPanel = () => {
   const handleLogout = () => {
     setIsAuthenticated(false);
     setPassword('');
+    setUploadedFiles([]);
   };
 
   // Şifre Ekranı
@@ -162,20 +231,34 @@ const AdminPanel = () => {
           </div>
         </div>
         
-        <button 
-          onClick={handleLogout}
-          style={{
-            background: '#DC2626',
-            color: 'white',
-            border: 'none',
-            padding: '8px 16px',
-            borderRadius: '6px',
-            cursor: 'pointer',
-            fontSize: '14px'
-          }}
-        >
-          🚪 Çıkış
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+          {/* API Durum Göstergesi */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <div style={{ 
+              width: '8px', 
+              height: '8px', 
+              backgroundColor: '#10B981', 
+              borderRadius: '50%',
+              animation: 'pulse 2s infinite'
+            }}></div>
+            <span style={{ fontSize: '12px', opacity: 0.8 }}>API Bağlı</span>
+          </div>
+          
+          <button 
+            onClick={handleLogout}
+            style={{
+              background: '#DC2626',
+              color: 'white',
+              border: 'none',
+              padding: '8px 16px',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '14px'
+            }}
+          >
+            🚪 Çıkış
+          </button>
+        </div>
       </header>
 
       {/* Content */}
@@ -200,8 +283,9 @@ const AdminPanel = () => {
               borderRadius: '12px',
               padding: '40px',
               textAlign: 'center',
-              backgroundColor: '#fef2f2',
-              marginBottom: '20px'
+              backgroundColor: loading ? '#f3f4f6' : '#fef2f2',
+              marginBottom: '20px',
+              opacity: loading ? 0.7 : 1
             }}>
               <div style={{ marginBottom: '20px' }}>
                 <div style={{
@@ -214,13 +298,15 @@ const AdminPanel = () => {
                   justifyContent: 'center',
                   marginBottom: '15px'
                 }}>
-                  <span style={{ color: 'white', fontSize: '24px' }}>📊</span>
+                  <span style={{ color: 'white', fontSize: '24px' }}>
+                    {loading ? '⏳' : '📊'}
+                  </span>
                 </div>
                 <h3 style={{ color: '#333', marginBottom: '8px' }}>
-                  Excel Dosyasını Sürükleyin veya Seçin
+                  {loading ? 'Dosya Yükleniyor ve İşleniyor...' : 'Excel Dosyasını Sürükleyin veya Seçin'}
                 </h3>
                 <p style={{ color: '#666', marginBottom: '20px' }}>
-                  Desteklenen formatlar: .xlsx, .xls, .csv
+                  {loading ? 'Lütfen bekleyin, dosya backend\'de parse ediliyor...' : 'Desteklenen formatlar: .xlsx, .xls, .csv (Max: 10MB)'}
                 </p>
               </div>
               
@@ -230,13 +316,22 @@ const AdminPanel = () => {
                 onChange={handleFileUpload}
                 style={{ display: 'none' }}
                 id="fileInput"
+                disabled={loading}
               />
               <label
                 htmlFor="fileInput"
-                className="btn-primary"
-                style={{ cursor: 'pointer', display: 'inline-block' }}
+                className={loading ? '' : 'btn-primary'}
+                style={{ 
+                  cursor: loading ? 'not-allowed' : 'pointer', 
+                  display: 'inline-block',
+                  backgroundColor: loading ? '#9CA3AF' : '#DC2626',
+                  color: 'white',
+                  padding: '12px 24px',
+                  borderRadius: '8px',
+                  fontWeight: '600'
+                }}
               >
-                📁 Dosya Seç
+                {loading ? '⏳ Yükleniyor...' : '📁 Dosya Seç'}
               </label>
             </div>
           </div>
@@ -250,7 +345,7 @@ const AdminPanel = () => {
               alignItems: 'center',
               gap: '10px'
             }}>
-              📋 Yüklenen Dosyalar
+              📋 Yüklenen Dosyalar ({uploadedFiles.length})
             </h3>
             
             <div style={{ overflowX: 'auto' }}>
@@ -259,36 +354,53 @@ const AdminPanel = () => {
                   <tr style={{ backgroundColor: '#f8f9fa' }}>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Dosya Adı</th>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Boyut</th>
+                    <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Satır Sayısı</th>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Tarih</th>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Durum</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {uploadedFiles.map((file) => (
-                    <tr key={file.id}>
-                      <td style={{ padding: '12px', border: '1px solid #dee2e6', fontWeight: '500' }}>
-                        📄 {file.name}
-                      </td>
-                      <td style={{ padding: '12px', border: '1px solid #dee2e6', color: '#666' }}>
-                        {file.size}
-                      </td>
-                      <td style={{ padding: '12px', border: '1px solid #dee2e6', color: '#666' }}>
-                        {file.date}
-                      </td>
-                      <td style={{ padding: '12px', border: '1px solid #dee2e6' }}>
-                        <span style={{
-                          padding: '4px 12px',
-                          borderRadius: '20px',
-                          fontSize: '12px',
-                          fontWeight: '500',
-                          backgroundColor: file.status === 'Başarılı' ? '#dcfce7' : '#fecaca',
-                          color: file.status === 'Başarılı' ? '#166534' : '#dc2626'
-                        }}>
-                          {file.status === 'Başarılı' ? '✅' : '❌'} {file.status}
-                        </span>
+                  {uploadedFiles.length === 0 ? (
+                    <tr>
+                      <td colSpan="5" style={{ 
+                        padding: '20px', 
+                        textAlign: 'center', 
+                        color: '#666',
+                        border: '1px solid #dee2e6'
+                      }}>
+                        📄 Henüz dosya yüklenmedi. Excel dosyası yükleyerek başlayın!
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    uploadedFiles.map((file) => (
+                      <tr key={file.id}>
+                        <td style={{ padding: '12px', border: '1px solid #dee2e6', fontWeight: '500' }}>
+                          📄 {file.name}
+                        </td>
+                        <td style={{ padding: '12px', border: '1px solid #dee2e6', color: '#666' }}>
+                          {file.size}
+                        </td>
+                        <td style={{ padding: '12px', border: '1px solid #dee2e6', color: '#666' }}>
+                          {file.rowCount ? `${file.rowCount} satır` : '-'}
+                        </td>
+                        <td style={{ padding: '12px', border: '1px solid #dee2e6', color: '#666' }}>
+                          {file.date}
+                        </td>
+                        <td style={{ padding: '12px', border: '1px solid #dee2e6' }}>
+                          <span style={{
+                            padding: '4px 12px',
+                            borderRadius: '20px',
+                            fontSize: '12px',
+                            fontWeight: '500',
+                            backgroundColor: file.status === 'Başarılı' ? '#dcfce7' : '#fecaca',
+                            color: file.status === 'Başarılı' ? '#166534' : '#dc2626'
+                          }}>
+                            {file.status === 'Başarılı' ? '✅' : '❌'} {file.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -296,6 +408,14 @@ const AdminPanel = () => {
 
         </div>
       </main>
+
+      {/* CSS Animasyonları */}
+      <style jsx>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      `}</style>
     </div>
   );
 };
