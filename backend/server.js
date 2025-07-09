@@ -4,10 +4,11 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const path = require('path');
 const fs = require('fs');
+const chokidar = require('chokidar');
 
 console.log('Server.js dosyası okunuyor...');
 
-const app = express(); // ← APP BURADA TANIMLANMALI
+const app = express();
 const PORT = 5000;
 
 console.log('Express app oluşturuluyor...');
@@ -17,6 +18,13 @@ app.use(cors());
 app.use(express.json());
 
 console.log('Middleware eklendi...');
+
+// Auto-import klasörünü oluştur
+const autoImportDir = './auto-import';
+if (!fs.existsSync(autoImportDir)) {
+  fs.mkdirSync(autoImportDir);
+  console.log('📁 Auto-import klasörü oluşturuldu');
+}
 
 // Multer konfigürasyonu
 const storage = multer.diskStorage({
@@ -75,16 +83,225 @@ let uploadedFilesList = [
   }
 ];
 
-let detailDataList = []; // Detay veriler için
+let detailDataList = [];
 
-// Detay verileri iş
-// ... (yukarıdaki kodların devamı)
+// ========== OTOMATIK DOSYA İZLEME SİSTEMİ ==========
 
-// Detay verileri işleme fonksiyonu
+class FileWatcher {
+  constructor() {
+    this.watchPath = path.join(__dirname, 'auto-import', 'production_data.xlsx');
+    this.lastModified = null;
+    this.isWatching = false;
+    this.watcher = null;
+  }
+
+  startWatching() {
+    console.log('🔍 Dosya izleme sistemi başlatılıyor...');
+    
+    // Dosya değişikliklerini izle
+    this.watcher = chokidar.watch(this.watchPath, {
+      persistent: true,
+      ignoreInitial: false,
+      awaitWriteFinish: {
+        stabilityThreshold: 2000,
+        pollInterval: 100
+      }
+    });
+    
+    this.watcher.on('add', (filePath) => {
+      console.log('📁 Yeni dosya tespit edildi:', filePath);
+      this.processFile('add');
+    });
+
+    this.watcher.on('change', (filePath) => {
+      console.log('📝 Dosya değişikliği tespit edildi:', filePath);
+      this.processFile('change');
+    });
+
+    this.watcher.on('error', (error) => {
+      console.error('❌ Dosya izleme hatası:', error);
+    });
+
+    // Periyodik kontrol (5 dakikada bir)
+    setInterval(() => {
+      this.checkFileUpdate();
+    }, 5 * 60 * 1000); // 5 dakika
+
+    this.isWatching = true;
+    console.log('✅ Dosya izleme aktif:', this.watchPath);
+    
+    // İlk başlangıçta dosyayı kontrol et
+    if (fs.existsSync(this.watchPath)) {
+      console.log('🔍 Mevcut dosya tespit edildi, işleniyor...');
+      setTimeout(() => this.processFile('initial'), 1000);
+    } else {
+      console.log('📋 Henüz otomatik dosya yok. Bekleniyor...');
+    }
+  }
+
+  async checkFileUpdate() {
+    try {
+      if (!fs.existsSync(this.watchPath)) return;
+
+      const stats = fs.statSync(this.watchPath);
+      const currentModified = stats.mtime.getTime();
+
+      if (this.lastModified !== currentModified) {
+        console.log('⏰ Periyodik kontrol: Dosya değişikliği tespit edildi');
+        this.lastModified = currentModified;
+        await this.processFile('periodic');
+      }
+    } catch (error) {
+      console.error('❌ Periyodik dosya kontrol hatası:', error);
+    }
+  }
+
+  async processFile(source = 'unknown') {
+    try {
+      console.log(`🔄 Dosya işleniyor (kaynak: ${source})...`);
+      
+      if (!fs.existsSync(this.watchPath)) {
+        console.log('⚠️ Dosya bulunamadı:', this.watchPath);
+        return;
+      }
+
+      // Dosya bilgilerini al
+      const stats = fs.statSync(this.watchPath);
+      this.lastModified = stats.mtime.getTime();
+
+      // Excel dosyasını parse et
+      const parseResult = parseExcelFile(this.watchPath, 'production_data.xlsx');
+      
+      if (parseResult.success) {
+        // Otomatik dosya listesine ekle/güncelle
+        const existingAutoFile = uploadedFilesList.find(f => f.source === 'auto');
+        
+        const autoFileInfo = {
+          id: existingAutoFile ? existingAutoFile.id : Date.now(),
+          name: '🤖 production_data.xlsx (Otomatik)',
+          filename: 'production_data.xlsx',
+          uploadDate: new Date().toISOString(),
+          size: (stats.size / 1024 / 1024).toFixed(2) + ' MB',
+          status: 'processed',
+          rowCount: parseResult.rowCount,
+          columns: parseResult.columns,
+          source: 'auto',
+          lastUpdate: new Date().toISOString()
+        };
+
+        if (existingAutoFile) {
+          Object.assign(existingAutoFile, autoFileInfo);
+          console.log('🔄 Otomatik dosya güncellendi');
+        } else {
+          uploadedFilesList.unshift(autoFileInfo);
+          console.log('✅ Yeni otomatik dosya eklendi');
+        }
+
+        console.log(`✅ Otomatik dosya başarıyla işlendi (${parseResult.rowCount} kayıt)`);
+        console.log('📊 Yeni Dashboard İstatistikleri:', dashboardStats);
+        
+      } else {
+        console.error('❌ Otomatik dosya parse hatası:', parseResult.error);
+      }
+      
+    } catch (error) {
+      console.error('❌ Otomatik dosya işleme hatası:', error);
+    }
+  }
+
+  getStatus() {
+    return {
+      isWatching: this.isWatching,
+      watchPath: this.watchPath,
+      lastModified: this.lastModified,
+      fileExists: fs.existsSync(this.watchPath),
+      lastUpdate: this.lastModified ? new Date(this.lastModified).toISOString() : null
+    };
+  }
+
+  stop() {
+    if (this.watcher) {
+      this.watcher.close();
+      this.isWatching = false;
+      console.log('🛑 Dosya izleme durduruldu');
+    }
+  }
+}
+
+// FileWatcher instance'ı oluştur
+const fileWatcher = new FileWatcher();
+
+// Detay verileri işleme fonksiyonu - GÜNCELLENMIŞ
 function processDetailData(data) {
   console.log('🔍 Detay verileri işleniyor...');
+  console.log('📊 Ham veri örneği:', data.slice(0, 2));
   
   try {
+    // Tarih parse fonksiyonu - GÜNCELLENMİŞ
+    const parseDateTime = (dateTimeStr) => {
+      if (!dateTimeStr || dateTimeStr.toString().trim() === '') return null;
+      
+      try {
+        const str = dateTimeStr.toString().trim();
+        console.log('🔍 Parse ediliyor:', str);
+        
+        // 1. Normal Türk tarihi formatı: "14.12.2021 11:50"
+        if (str.includes('.') && str.includes(' ')) {
+          const parts = str.split(' ');
+          
+          if (parts.length >= 2) {
+            const datePart = parts[0]; // "14.12.2021"
+            const timePart = parts[1]; // "11:50"
+            
+            const [day, month, year] = datePart.split('.');
+            const [hour, minute] = timePart.split(':');
+            
+            const yearNum = parseInt(year);
+            const monthNum = parseInt(month);
+            const dayNum = parseInt(day);
+            const hourNum = parseInt(hour);
+            const minuteNum = parseInt(minute || 0);
+            
+            if (yearNum && monthNum && dayNum && hourNum !== undefined) {
+              const isoDate = new Date(
+                yearNum, 
+                monthNum - 1,
+                dayNum,
+                hourNum,
+                minuteNum
+              );
+              
+              console.log('✅ Türk tarihi parse edildi:', isoDate.toISOString());
+              return isoDate.toISOString();
+            }
+          }
+        }
+        
+        // 2. Excel Serial Number formatı: "44450.71314814815"
+        const numValue = parseFloat(str);
+        if (!isNaN(numValue) && numValue > 40000 && numValue < 50000) {
+          // Excel epoch: 1 Ocak 1900 = 1
+          // JavaScript epoch: 1 Ocak 1970
+          
+          // Excel'in hatalı leap year hesabı düzeltmesi
+          const excelEpoch = new Date(1900, 0, 1);
+          const daysSinceEpoch = numValue - 2; // Excel'in bug'ı için -2
+          
+          const jsDate = new Date(excelEpoch.getTime() + (daysSinceEpoch * 24 * 60 * 60 * 1000));
+          
+          console.log('✅ Excel serial number parse edildi:', jsDate.toISOString());
+          return jsDate.toISOString();
+        }
+        
+        console.warn('⚠️ Tarih formatı tanınamadı:', str);
+        return null;
+        
+      } catch (e) {
+        console.error('❌ Tarih parse hatası:', dateTimeStr, e);
+        return null;
+      }
+    };
+
     detailDataList = data.map((row, index) => {
       // Sütun isimlerini normalize et
       const normalizedRow = {};
@@ -93,39 +310,16 @@ function processDetailData(data) {
         normalizedRow[cleanKey] = row[key];
       });
       
-      // Tarih parse etme fonksiyonu
-      const parseDateTime = (dateTimeStr) => {
-        if (!dateTimeStr || dateTimeStr.toString().trim() === '') return null;
-        
-        try {
-          const str = dateTimeStr.toString().trim();
-          const parts = str.split(' ');
-          
-          if (parts.length >= 2) {
-            const datePart = parts[0];
-            const timePart = parts[1];
-            
-            const [day, month, year] = datePart.split('.');
-            const [hour, minute] = timePart.split(':');
-            
-            const isoDate = new Date(
-              parseInt(year), 
-              parseInt(month) - 1, 
-              parseInt(day),
-              parseInt(hour),
-              parseInt(minute || 0)
-            );
-            
-            return isoDate.toISOString();
-          }
-        } catch (e) {
-          console.warn('Tarih parse hatası:', dateTimeStr, e);
-        }
-        
-        return null;
-      };
+      // Debug: İlk birkaç satırın ham verilerini göster
+      if (index < 3) {
+        console.log(`📝 Satır ${index + 1} ham veri:`, {
+          'IS BASLATMA SAATI': normalizedRow['IS BASLATMA SAATI'],
+          'IS BITIRME SAATI': normalizedRow['IS BITIRME SAATI'],
+          'SIPARIS NUMARASI': normalizedRow['SIPARIS NUMARASI']
+        });
+      }
       
-      return {
+      const processedItem = {
         id: index + 1,
         siparisNo: normalizedRow['SIPARIS NUMARASI'] || '-',
         baslatmaSaati: parseDateTime(normalizedRow['IS BASLATMA SAATI']),
@@ -136,11 +330,22 @@ function processDetailData(data) {
         makinaPerformans: parseInt(normalizedRow['MAKINA PERFORMANSI']) || 0,
         operatorPerformans: parseInt(normalizedRow['OPERATOR PERFORMANSI']) || 0
       };
+      
+      // Debug: İlk birkaç satırın işlenmiş verilerini göster
+      if (index < 3) {
+        console.log(`📋 Satır ${index + 1} işlenmiş veri:`, processedItem);
+      }
+      
+      return processedItem;
     }).filter(item => 
       item.siparisNo !== '-' || item.parcaAdeti > 0
     );
     
     console.log('✅ İşlenen detay kayıt sayısı:', detailDataList.length);
+    console.log('📅 İlk kaydın tarih bilgileri:', {
+      baslatma: detailDataList[0]?.baslatmaSaati,
+      bitirme: detailDataList[0]?.bitirmeSaati
+    });
     
   } catch (error) {
     console.error('❌ Detay veri işleme hatası:', error);
@@ -148,7 +353,7 @@ function processDetailData(data) {
   }
 }
 
-// Excel parse fonksiyonunu güncelle
+// Excel parse fonksiyonu
 function parseExcelFile(filePath, originalName) {
   console.log('📊 Excel dosyası parse ediliyor:', originalName);
   
@@ -182,7 +387,7 @@ function parseExcelFile(filePath, originalName) {
   }
 }
 
-// Dashboard istatistik hesaplama (mevcut fonksiyon aynı kalıyor)
+// Dashboard istatistik hesaplama
 function calculateDashboardStats(data) {
   console.log('🧮 Dashboard istatistikleri hesaplanıyor...');
   
@@ -244,14 +449,33 @@ app.get('/', (req, res) => {
   console.log('Ana route çağrıldı');
   res.json({ 
     message: 'Yarış İzleme API çalışıyor! 🚀',
-    version: '1.0.0',
+    version: '2.0.0',
+    features: ['Manuel Upload', 'Otomatik Dosya İzleme'],
     endpoints: [
       'GET / - Bu mesaj',
       'GET /api/dashboard-data - Dashboard verileri', 
       'POST /api/upload - Excel yükleme',
       'GET /api/files - Yüklenen dosyalar',
-      'GET /api/dashboard-detail - Detay veriler'
+      'GET /api/dashboard-detail - Detay veriler',
+      'GET /api/auto-import-status - Otomatik import durumu'
     ]
+  });
+});
+
+// Otomatik import durumu
+app.get('/api/auto-import-status', (req, res) => {
+  console.log('🤖 Otomatik import durumu sorgulandı');
+  
+  const status = fileWatcher.getStatus();
+  
+  res.json({
+    success: true,
+    ...status,
+    instructions: {
+      step1: 'Excel dosyanızı şu konuma kopyalayın: auto-import/production_data.xlsx',
+      step2: 'Dosyayı her güncelledikçe sistem otomatik algılayacak',
+      step3: 'Manuel yükleme de hala kullanılabilir'
+    }
   });
 });
 
@@ -263,13 +487,14 @@ app.get('/api/dashboard-data', (req, res) => {
     stats: dashboardStats,
     lastUpdate: new Date().toISOString(),
     status: 'success',
-    dataSource: uploadedFilesList.length > 1 ? 'excel' : 'demo'
+    dataSource: uploadedFilesList.length > 1 ? 'excel' : 'demo',
+    autoImportStatus: fileWatcher.getStatus()
   };
   
   res.json(dashboardData);
 });
 
-// Dashboard detay verileri - YENİ ENDPOINT
+// Dashboard detay verileri
 app.get('/api/dashboard-detail', (req, res) => {
   console.log('📋 Dashboard detay verisi istendi');
   
@@ -277,7 +502,8 @@ app.get('/api/dashboard-detail', (req, res) => {
     res.json({
       success: true,
       data: detailDataList,
-      totalRecords: detailDataList.length
+      totalRecords: detailDataList.length,
+      autoImportActive: fileWatcher.isWatching
     });
     
   } catch (error) {
@@ -290,9 +516,9 @@ app.get('/api/dashboard-detail', (req, res) => {
   }
 });
 
-// Upload endpoint
+// Upload endpoint (Manuel yükleme)
 app.post('/api/upload', upload.single('file'), (req, res) => {
-  console.log('📤 File upload isteği geldi');
+  console.log('📤 Manuel dosya upload isteği geldi');
   
   if (!req.file) {
     return res.status(400).json({
@@ -320,19 +546,21 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     size: (req.file.size / 1024 / 1024).toFixed(2) + ' MB',
     status: 'processed',
     rowCount: parseResult.rowCount,
-    columns: parseResult.columns
+    columns: parseResult.columns,
+    source: 'manual'
   };
   
   uploadedFilesList.unshift(fileInfo);
   
-  console.log('✅ Dosya başarıyla işlendi');
+  console.log('✅ Manuel dosya başarıyla işlendi');
   
   res.json({
     success: true,
     message: 'Dosya başarıyla yüklendi ve işlendi!',
     file: fileInfo,
     stats: dashboardStats,
-    detailRecords: detailDataList.length
+    detailRecords: detailDataList.length,
+    autoImportStatus: fileWatcher.getStatus()
   });
 });
 
@@ -343,7 +571,8 @@ app.get('/api/files', (req, res) => {
   res.json({ 
     files: uploadedFilesList, 
     total: uploadedFilesList.length,
-    totalDetailRecords: detailDataList.length
+    totalDetailRecords: detailDataList.length,
+    autoImportStatus: fileWatcher.getStatus()
   });
 });
 
@@ -357,7 +586,20 @@ app.listen(PORT, () => {
   console.log(`📁 Files API: http://localhost:${PORT}/api/files`);
   console.log(`📤 Upload API: http://localhost:${PORT}/api/upload`);
   console.log(`📋 Detail API: http://localhost:${PORT}/api/dashboard-detail`);
+  console.log(`🤖 Auto Import Status: http://localhost:${PORT}/api/auto-import-status`);
   console.log(`📅 Zaman: ${new Date().toLocaleString('tr-TR')}`);
+  
+  // Otomatik dosya izleme sistemini başlat
+  setTimeout(() => {
+    fileWatcher.startWatching();
+  }, 2000);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n🛑 Server kapatılıyor...');
+  fileWatcher.stop();
+  process.exit(0);
 });
 
 console.log('Server başlatılıyor...');

@@ -5,6 +5,7 @@ const AdminPanel = () => {
   const [password, setPassword] = useState('');
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [autoImportStatus, setAutoImportStatus] = useState(null);
 
   // Admin şifresi (gerçek projede backend'den gelecek)
   const ADMIN_PASSWORD = 'admin123';
@@ -13,8 +14,29 @@ const AdminPanel = () => {
   useEffect(() => {
     if (isAuthenticated) {
       fetchFileList();
+      fetchAutoImportStatus();
+      
+      // Her 30 saniyede bir otomatik durumu güncelle
+      const interval = setInterval(() => {
+        fetchAutoImportStatus();
+      }, 30000);
+      
+      return () => clearInterval(interval);
     }
   }, [isAuthenticated]);
+
+  // Otomatik import durumunu çek
+  const fetchAutoImportStatus = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/auto-import-status');
+      if (response.ok) {
+        const data = await response.json();
+        setAutoImportStatus(data);
+      }
+    } catch (error) {
+      console.error('Otomatik import durumu alınamadı:', error);
+    }
+  };
 
   // Dosya listesini API'den çek
   const fetchFileList = async () => {
@@ -30,7 +52,9 @@ const AdminPanel = () => {
           date: new Date(file.uploadDate).toLocaleString('tr-TR'),
           status: file.status === 'processed' ? 'Başarılı' : 'Hata',
           size: file.size,
-          rowCount: file.rowCount
+          rowCount: file.rowCount,
+          source: file.source || 'manual',
+          lastUpdate: file.lastUpdate ? new Date(file.lastUpdate).toLocaleString('tr-TR') : null
         }));
         
         setUploadedFiles(formattedFiles);
@@ -126,6 +150,7 @@ const AdminPanel = () => {
     setIsAuthenticated(false);
     setPassword('');
     setUploadedFiles([]);
+    setAutoImportStatus(null);
   };
 
   // Şifre Ekranı
@@ -244,6 +269,22 @@ const AdminPanel = () => {
             <span style={{ fontSize: '12px', opacity: 0.8 }}>API Bağlı</span>
           </div>
           
+          {/* Otomatik Import Durumu */}
+          {autoImportStatus && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <div style={{ 
+                width: '8px', 
+                height: '8px', 
+                backgroundColor: autoImportStatus.isWatching ? '#10B981' : '#DC2626', 
+                borderRadius: '50%',
+                animation: autoImportStatus.isWatching ? 'pulse 2s infinite' : 'none'
+              }}></div>
+              <span style={{ fontSize: '12px', opacity: 0.8 }}>
+                Auto: {autoImportStatus.isWatching ? 'Aktif' : 'Pasif'}
+              </span>
+            </div>
+          )}
+          
           <button 
             onClick={handleLogout}
             style={{
@@ -263,7 +304,109 @@ const AdminPanel = () => {
 
       {/* Content */}
       <main style={{ padding: '30px 20px' }}>
-        <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+          
+          {/* Otomatik Import Durumu */}
+          {autoImportStatus && (
+            <div className="card" style={{ marginBottom: '30px' }}>
+              <h2 style={{ 
+                color: '#333', 
+                marginBottom: '20px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px'
+              }}>
+                🤖 Otomatik Veri İmportı
+              </h2>
+              
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+                gap: '20px',
+                marginBottom: '20px'
+              }}>
+                {/* Durum Kartı */}
+                <div style={{
+                  padding: '20px',
+                  background: autoImportStatus.isWatching ? 
+                    'linear-gradient(135deg, #dcfce7, #bbf7d0)' : 
+                    'linear-gradient(135deg, #fecaca, #fca5a5)',
+                  borderRadius: '12px',
+                  border: `2px solid ${autoImportStatus.isWatching ? '#22c55e' : '#ef4444'}`
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', marginBottom: '10px' }}>
+                    <div style={{
+                      width: '40px',
+                      height: '40px',
+                      borderRadius: '50%',
+                      background: autoImportStatus.isWatching ? '#22c55e' : '#ef4444',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginRight: '15px'
+                    }}>
+                      <span style={{ color: 'white', fontSize: '18px' }}>
+                        {autoImportStatus.isWatching ? '✅' : '❌'}
+                      </span>
+                    </div>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: '18px', color: '#333' }}>
+                        Sistem Durumu
+                      </h3>
+                      <p style={{ margin: 0, fontSize: '14px', color: autoImportStatus.isWatching ? '#166534' : '#dc2626' }}>
+                        {autoImportStatus.isWatching ? 'Aktif İzleniyor' : 'Pasif'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Dosya Bilgisi */}
+                <div style={{
+                  padding: '20px',
+                  background: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
+                  borderRadius: '12px',
+                  border: '2px solid #3b82f6'
+                }}>
+                  <h4 style={{ margin: '0 0 10px 0', color: '#1e40af' }}>📁 İzlenen Dosya</h4>
+                  <p style={{ margin: '5px 0', fontSize: '12px', color: '#374151' }}>
+                    <strong>Konum:</strong> auto-import/production_data.xlsx
+                  </p>
+                  <p style={{ margin: '5px 0', fontSize: '12px', color: '#374151' }}>
+                    <strong>Mevcut:</strong> {autoImportStatus.fileExists ? '✅ Var' : '❌ Yok'}
+                  </p>
+                  {autoImportStatus.lastUpdate && (
+                    <p style={{ margin: '5px 0', fontSize: '12px', color: '#374151' }}>
+                      <strong>Son Güncelleme:</strong> {new Date(autoImportStatus.lastUpdate).toLocaleString('tr-TR')}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Kullanım Talimatları */}
+              <div style={{
+                padding: '20px',
+                background: '#f8fafc',
+                borderRadius: '8px',
+                border: '1px solid #e2e8f0'
+              }}>
+                <h4 style={{ margin: '0 0 15px 0', color: '#374151' }}>📋 Nasıl Kullanılır?</h4>
+                <ol style={{ margin: 0, paddingLeft: '20px', color: '#6b7280' }}>
+                  <li style={{ marginBottom: '8px' }}>
+                    Excel dosyanızı proje klasöründeki <code style={{ background: '#e5e7eb', padding: '2px 6px', borderRadius: '4px' }}>auto-import/production_data.xlsx</code> konumuna kopyalayın
+                  </li>
+                  <li style={{ marginBottom: '8px' }}>
+                    Dosyayı her güncelledikçe sistem otomatik olarak algılar ve verileri işler
+                  </li>
+                  <li style={{ marginBottom: '8px' }}>
+                    Dashboard sayfası otomatik olarak güncellenir (60 saniyede bir kontrol)
+                  </li>
+                  <li>
+                    Acil durumlar için manuel yükleme de kullanılabilir
+                  </li>
+                </ol>
+              </div>
+            </div>
+          )}
           
           {/* Upload Section */}
           <div className="card" style={{ marginBottom: '30px' }}>
@@ -274,7 +417,7 @@ const AdminPanel = () => {
               alignItems: 'center',
               gap: '10px'
             }}>
-              📤 Excel Dosyası Yükle
+              📤 Manuel Excel Dosyası Yükle
             </h2>
             
             {/* Upload Area */}
@@ -345,7 +488,7 @@ const AdminPanel = () => {
               alignItems: 'center',
               gap: '10px'
             }}>
-              📋 Yüklenen Dosyalar ({uploadedFiles.length})
+              📋 Dosya Geçmişi ({uploadedFiles.length})
             </h3>
             
             <div style={{ overflowX: 'auto' }}>
@@ -353,8 +496,9 @@ const AdminPanel = () => {
                 <thead>
                   <tr style={{ backgroundColor: '#f8f9fa' }}>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Dosya Adı</th>
+                    <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Tip</th>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Boyut</th>
-                    <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Satır Sayısı</th>
+                    <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Satır</th>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Tarih</th>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Durum</th>
                   </tr>
@@ -362,29 +506,50 @@ const AdminPanel = () => {
                 <tbody>
                   {uploadedFiles.length === 0 ? (
                     <tr>
-                      <td colSpan="5" style={{ 
+                      <td colSpan="6" style={{ 
                         padding: '20px', 
                         textAlign: 'center', 
                         color: '#666',
                         border: '1px solid #dee2e6'
                       }}>
-                        📄 Henüz dosya yüklenmedi. Excel dosyası yükleyerek başlayın!
+                        📄 Henüz dosya yüklenmedi. Excel dosyası yükleyerek veya otomatik sistemi kullanarak başlayın!
                       </td>
                     </tr>
                   ) : (
                     uploadedFiles.map((file) => (
-                      <tr key={file.id}>
+                      <tr key={file.id} style={{
+                        backgroundColor: file.source === 'auto' ? '#f0f9ff' : 'white'
+                      }}>
                         <td style={{ padding: '12px', border: '1px solid #dee2e6', fontWeight: '500' }}>
-                          📄 {file.name}
+                          {file.source === 'auto' ? '🤖' : '📄'} {file.name}
+                        </td>
+                        <td style={{ padding: '12px', border: '1px solid #dee2e6' }}>
+                          <span style={{
+                            padding: '4px 8px',
+                            borderRadius: '12px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            background: file.source === 'auto' ? '#dbeafe' : '#f3f4f6',
+                            color: file.source === 'auto' ? '#1e40af' : '#374151'
+                          }}>
+                            {file.source === 'auto' ? 'OTOMATİK' : 'MANUEL'}
+                          </span>
                         </td>
                         <td style={{ padding: '12px', border: '1px solid #dee2e6', color: '#666' }}>
                           {file.size}
                         </td>
                         <td style={{ padding: '12px', border: '1px solid #dee2e6', color: '#666' }}>
-                          {file.rowCount ? `${file.rowCount} satır` : '-'}
+                          {file.rowCount ? `${file.rowCount}` : '-'}
                         </td>
                         <td style={{ padding: '12px', border: '1px solid #dee2e6', color: '#666' }}>
-                          {file.date}
+                          <div style={{ fontSize: '12px' }}>
+                            {file.date}
+                            {file.lastUpdate && file.source === 'auto' && (
+                              <div style={{ color: '#059669', fontWeight: '500' }}>
+                                Son: {file.lastUpdate}
+                              </div>
+                            )}
+                          </div>
                         </td>
                         <td style={{ padding: '12px', border: '1px solid #dee2e6' }}>
                           <span style={{
@@ -414,6 +579,37 @@ const AdminPanel = () => {
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.5; }
+        }
+        
+        .card {
+          background: white;
+          border-radius: 12px;
+          padding: 24px;
+          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+          border: 1px solid #e5e7eb;
+        }
+        
+        .btn-primary {
+          background: #DC2626;
+          color: white;
+          border: none;
+          padding: 12px 24px;
+          border-radius: 8px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: background 0.2s;
+        }
+        
+        .btn-primary:hover {
+          background: #B91C1C;
+        }
+        
+        code {
+          background: #f3f4f6;
+          padding: 2px 6px;
+          border-radius: 4px;
+          font-family: monospace;
+          font-size: 13px;
         }
       `}</style>
     </div>
