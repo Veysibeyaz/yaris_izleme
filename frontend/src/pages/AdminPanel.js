@@ -6,6 +6,10 @@ const AdminPanel = () => {
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [autoImportStatus, setAutoImportStatus] = useState(null);
+  const [machinesList, setMachinesList] = useState([]);
+  const [selectedMachine, setSelectedMachine] = useState('all');
+  const [newMachineName, setNewMachineName] = useState('');
+  const [showAddMachine, setShowAddMachine] = useState(false);
 
   // Admin şifresi (gerçek projede backend'den gelecek)
   const ADMIN_PASSWORD = 'admin123';
@@ -13,6 +17,7 @@ const AdminPanel = () => {
   // Component yüklendiğinde dosya listesini çek
   useEffect(() => {
     if (isAuthenticated) {
+      fetchMachinesList();
       fetchFileList();
       fetchAutoImportStatus();
       
@@ -23,7 +28,106 @@ const AdminPanel = () => {
       
       return () => clearInterval(interval);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, selectedMachine]);
+
+  // Makine listesini çek
+  const fetchMachinesList = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/machines');
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && Array.isArray(data.machines)) {
+          setMachinesList(data.machines);
+          console.log('✅ Makine listesi alındı:', data.machines);
+        }
+      }
+    } catch (error) {
+      console.error('Makine listesi alınamadı:', error);
+    }
+  };
+
+  // Yeni makine ekle
+  const handleAddMachine = async () => {
+    if (!newMachineName.trim()) {
+      alert('Makine adı boş olamaz!');
+      return;
+    }
+
+    try {
+      const response = await fetch('http://localhost:5000/api/machines', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: newMachineName.trim() })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          console.log('✅ Yeni makine eklendi:', data.machine);
+          setNewMachineName('');
+          setShowAddMachine(false);
+          fetchMachinesList();
+          alert(`🎉 ${data.machine.name} başarıyla eklendi!\n\nMakine klasörü: auto-import/makine-${data.machine.id}/\nBu klasöre production_data.xlsx dosyasını koyabilirsiniz.`);
+        } else {
+          alert('❌ Makine eklenirken hata oluştu: ' + data.message);
+        }
+      } else {
+        throw new Error('HTTP ' + response.status);
+      }
+    } catch (error) {
+      console.error('❌ Makine ekleme hatası:', error);
+      alert('❌ Makine eklenirken hata oluştu: ' + error.message);
+    }
+  };
+
+  // Makine sil
+  const handleDeleteMachine = async (machine) => {
+    if (machinesList.length <= 1) {
+      alert('❌ En az bir makine olmalı!');
+      return;
+    }
+
+    const confirmDelete = window.confirm(
+      `⚠️ ${machine.name} makinesini silmek istediğinizden emin misiniz?\n\n` +
+      `Bu işlem:\n` +
+      `• Makine klasörünü silmez (manuel silebilirsiniz)\n` +
+      `• Makine verilerini sistemden kaldırır\n` +
+      `• Geri alınamaz\n\n` +
+      `Devam etmek istiyor musunuz?`
+    );
+
+    if (!confirmDelete) return;
+
+    try {
+      const response = await fetch(`http://localhost:5000/api/machines/${machine.id}`, {
+        method: 'DELETE'
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          console.log('✅ Makine silindi:', data.removedMachine);
+          
+          // Eğer silinen makine seçiliyse, 'all' seç
+          if (selectedMachine === `makine-${machine.id}`) {
+            setSelectedMachine('all');
+          }
+          
+          fetchMachinesList();
+          alert(`✅ ${data.removedMachine.name} başarıyla silindi!`);
+        } else {
+          alert('❌ Makine silinirken hata oluştu: ' + data.message);
+        }
+      } else {
+        throw new Error('HTTP ' + response.status);
+      }
+    } catch (error) {
+      console.error('❌ Makine silme hatası:', error);
+      alert('❌ Makine silinirken hata oluştu: ' + error.message);
+    }
+  };
 
   // Otomatik import durumunu çek
   const fetchAutoImportStatus = async () => {
@@ -41,7 +145,11 @@ const AdminPanel = () => {
   // Dosya listesini API'den çek
   const fetchFileList = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/files');
+      const url = selectedMachine === 'all' 
+        ? 'http://localhost:5000/api/files' 
+        : `http://localhost:5000/api/files/${selectedMachine}`;
+      
+      const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
         
@@ -54,7 +162,8 @@ const AdminPanel = () => {
           size: file.size,
           rowCount: file.rowCount,
           source: file.source || 'manual',
-          lastUpdate: file.lastUpdate ? new Date(file.lastUpdate).toLocaleString('tr-TR') : null
+          lastUpdate: file.lastUpdate ? new Date(file.lastUpdate).toLocaleString('tr-TR') : null,
+          machineId: file.machineId
         }));
         
         setUploadedFiles(formattedFiles);
@@ -89,15 +198,42 @@ const AdminPanel = () => {
       return;
     }
 
+    // Makine seçimi kontrolü
+    if (selectedMachine === 'all') {
+      const machineChoice = window.prompt(
+        `📤 Dosyayı hangi makineye yüklemek istiyorsunuz?\n\n` +
+        `Mevcut makineler:\n` +
+        machinesList.map((m, i) => `${i + 1}. ${m.name}`).join('\n') + '\n\n' +
+        `Makine numarasını girin (1-${machinesList.length}):`
+      );
+      
+      if (!machineChoice) return;
+      
+      const machineIndex = parseInt(machineChoice) - 1;
+      if (isNaN(machineIndex) || machineIndex < 0 || machineIndex >= machinesList.length) {
+        alert('❌ Geçersiz makine numarası!');
+        return;
+      }
+      
+      // Seçilen makineyi güncelle
+      setSelectedMachine(`makine-${machinesList[machineIndex].id}`);
+    }
+
     // Upload işlemi başladı
     setLoading(true);
 
     // FormData oluştur
     const formData = new FormData();
     formData.append('file', file);
+    
+    // Seçili makine ID'sini ekle
+    const targetMachineId = selectedMachine !== 'all' ? selectedMachine.replace('makine-', '') : null;
+    if (targetMachineId) {
+      formData.append('machineId', targetMachineId);
+    }
 
     try {
-      console.log('📤 Dosya backend\'e gönderiliyor...');
+      console.log('📤 Dosya backend\'e gönderiliyor...', 'Hedef makine:', targetMachineId);
       
       // Backend'e gönder
       const response = await fetch('http://localhost:5000/api/upload', {
@@ -118,7 +254,9 @@ const AdminPanel = () => {
         fetchFileList();
         
         // Detaylı başarı mesajı
+        const machineName = targetMachineId ? `Makine-${targetMachineId}` : 'Genel';
         alert(`🎉 ${file.name} başarıyla yüklendi ve işlendi!\n\n` +
+              `🎯 Hedef: ${machineName}\n` +
               `📊 İşlenen satır sayısı: ${result.file.rowCount}\n` +
               `📈 Dashboard otomatik güncellendi!\n\n` +
               `Yeni Dashboard İstatistikleri:\n` +
@@ -151,6 +289,8 @@ const AdminPanel = () => {
     setPassword('');
     setUploadedFiles([]);
     setAutoImportStatus(null);
+    setMachinesList([]);
+    setSelectedMachine('all');
   };
 
   // Şifre Ekranı
@@ -182,7 +322,7 @@ const AdminPanel = () => {
             🛡️ Admin Panel
           </h1>
           <p style={{ color: '#666', fontSize: '14px', marginBottom: '30px' }}>
-            Lütfen admin şifresini girin
+            Çoklu Makine Yönetim Sistemi
           </p>
 
           {/* Şifre Formu */}
@@ -252,7 +392,9 @@ const AdminPanel = () => {
           />
           <div>
             <h1 style={{ margin: 0, fontSize: '20px' }}>🛡️ YARIŞ Admin Panel</h1>
-            <p style={{ margin: 0, fontSize: '12px', opacity: 0.8 }}>Veri Yönetim Sistemi</p>
+            <p style={{ margin: 0, fontSize: '12px', opacity: 0.8 }}>
+              Çoklu Makine Veri Yönetim Sistemi • {machinesList.length} Makine
+            </p>
           </div>
         </div>
         
@@ -304,7 +446,233 @@ const AdminPanel = () => {
 
       {/* Content */}
       <main style={{ padding: '30px 20px' }}>
-        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+        <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+          
+          {/* Makine Yönetimi */}
+          <div className="card" style={{ marginBottom: '30px' }}>
+            <h2 style={{ 
+              color: '#333', 
+              marginBottom: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px'
+            }}>
+              🏭 Makine Yönetimi
+            </h2>
+            
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+              gap: '20px',
+              marginBottom: '25px'
+            }}>
+              {/* Mevcut Makineler */}
+              <div style={{
+                padding: '20px',
+                background: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
+                borderRadius: '12px',
+                border: '2px solid #3b82f6'
+              }}>
+                <h4 style={{ margin: '0 0 15px 0', color: '#1e40af', display: 'flex', alignItems: 'center' }}>
+                  <span style={{ marginRight: '8px' }}>🔧</span>
+                  Aktif Makineler ({machinesList.length})
+                </h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {machinesList.map((machine) => (
+                    <div key={machine.id} style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '10px 15px',
+                      background: 'rgba(255, 255, 255, 0.7)',
+                      borderRadius: '8px',
+                      border: selectedMachine === `makine-${machine.id}` ? '2px solid #3b82f6' : '1px solid #e5e7eb'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ 
+                          fontSize: '12px',
+                          background: '#3b82f6',
+                          color: 'white',
+                          padding: '4px 8px',
+                          borderRadius: '6px',
+                          fontWeight: '600'
+                        }}>
+                          ID-{machine.id}
+                        </span>
+                        <span style={{ fontWeight: '600', color: '#374151' }}>
+                          {machine.name}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '5px' }}>
+                        <button
+                          onClick={() => setSelectedMachine(`makine-${machine.id}`)}
+                          style={{
+                            padding: '4px 8px',
+                            fontSize: '11px',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            background: selectedMachine === `makine-${machine.id}` ? '#10b981' : '#6b7280',
+                            color: 'white'
+                          }}
+                        >
+                          {selectedMachine === `makine-${machine.id}` ? '✓ Seçili' : 'Seç'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteMachine(machine)}
+                          style={{
+                            padding: '4px 8px',
+                            fontSize: '11px',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            background: '#ef4444',
+                            color: 'white'
+                          }}
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Yeni Makine Ekleme */}
+              <div style={{
+                padding: '20px',
+                background: 'linear-gradient(135deg, #f0fdf4, #dcfce7)',
+                borderRadius: '12px',
+                border: '2px solid #22c55e'
+              }}>
+                <h4 style={{ margin: '0 0 15px 0', color: '#166534', display: 'flex', alignItems: 'center' }}>
+                  <span style={{ marginRight: '8px' }}>➕</span>
+                  Yeni Makine Ekle
+                </h4>
+                
+                {!showAddMachine ? (
+                  <button
+                    onClick={() => setShowAddMachine(true)}
+                    style={{
+                      width: '100%',
+                      padding: '15px',
+                      background: 'linear-gradient(135deg, #22c55e, #16a34a)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      transition: 'all 0.3s ease'
+                    }}
+                  >
+                    🏭 Yeni Makine Ekle
+                  </button>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <input
+                      type="text"
+                      value={newMachineName}
+                      onChange={(e) => setNewMachineName(e.target.value)}
+                      placeholder="Makine adını girin..."
+                      style={{
+                        width: '100%',
+                        padding: '12px',
+                        border: '2px solid #22c55e',
+                        borderRadius: '8px',
+                        fontSize: '14px',
+                        boxSizing: 'border-box'
+                      }}
+                      onKeyPress={(e) => e.key === 'Enter' && handleAddMachine()}
+                      autoFocus
+                    />
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={handleAddMachine}
+                        style={{
+                          flex: 1,
+                          padding: '10px',
+                          background: '#22c55e',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ✓ Ekle
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowAddMachine(false);
+                          setNewMachineName('');
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '10px',
+                          background: '#6b7280',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ✗ İptal
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Makine Seçici */}
+            <div style={{
+              padding: '15px',
+              background: '#f8fafc',
+              borderRadius: '8px',
+              border: '1px solid #e2e8f0'
+            }}>
+              <h5 style={{ margin: '0 0 10px 0', color: '#374151' }}>📊 Görüntülenen Makine:</h5>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => setSelectedMachine('all')}
+                  style={{
+                    padding: '8px 16px',
+                    border: 'none',
+                    borderRadius: '20px',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    background: selectedMachine === 'all' ? '#dc2626' : '#e5e7eb',
+                    color: selectedMachine === 'all' ? 'white' : '#374151'
+                  }}
+                >
+                  🌐 Tümü
+                </button>
+                {machinesList.map((machine) => (
+                  <button
+                    key={machine.id}
+                    onClick={() => setSelectedMachine(`makine-${machine.id}`)}
+                    style={{
+                      padding: '8px 16px',
+                      border: 'none',
+                      borderRadius: '20px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      background: selectedMachine === `makine-${machine.id}` ? '#3b82f6' : '#e5e7eb',
+                      color: selectedMachine === `makine-${machine.id}` ? 'white' : '#374151'
+                    }}
+                  >
+                    🔧 {machine.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
           
           {/* Otomatik Import Durumu */}
           {autoImportStatus && (
@@ -316,7 +684,7 @@ const AdminPanel = () => {
                 alignItems: 'center',
                 gap: '10px'
               }}>
-                🤖 Otomatik Veri İmportı
+                🤖 Çoklu Makine Otomatik Veri İmportı
               </h2>
               
               <div style={{
@@ -325,7 +693,7 @@ const AdminPanel = () => {
                 gap: '20px',
                 marginBottom: '20px'
               }}>
-                {/* Durum Kartı */}
+                {/* Sistem Durum Kartı */}
                 <div style={{
                   padding: '20px',
                   background: autoImportStatus.isWatching ? 
@@ -354,31 +722,67 @@ const AdminPanel = () => {
                         Sistem Durumu
                       </h3>
                       <p style={{ margin: 0, fontSize: '14px', color: autoImportStatus.isWatching ? '#166534' : '#dc2626' }}>
-                        {autoImportStatus.isWatching ? 'Aktif İzleniyor' : 'Pasif'}
+                        {autoImportStatus.isWatching ? 'Tüm Makineler İzleniyor' : 'Sistem Pasif'}
                       </p>
                     </div>
                   </div>
+                  <p style={{ margin: '10px 0 0 0', fontSize: '13px', color: '#6b7280' }}>
+                    <strong>İzlenen Makine Sayısı:</strong> {autoImportStatus.totalMachines || 0}
+                  </p>
                 </div>
 
-                {/* Dosya Bilgisi */}
+                {/* Makine Durumları */}
                 <div style={{
                   padding: '20px',
                   background: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
                   borderRadius: '12px',
                   border: '2px solid #3b82f6'
                 }}>
-                  <h4 style={{ margin: '0 0 10px 0', color: '#1e40af' }}>📁 İzlenen Dosya</h4>
-                  <p style={{ margin: '5px 0', fontSize: '12px', color: '#374151' }}>
-                    <strong>Konum:</strong> auto-import/production_data.xlsx
-                  </p>
-                  <p style={{ margin: '5px 0', fontSize: '12px', color: '#374151' }}>
-                    <strong>Mevcut:</strong> {autoImportStatus.fileExists ? '✅ Var' : '❌ Yok'}
-                  </p>
-                  {autoImportStatus.lastUpdate && (
-                    <p style={{ margin: '5px 0', fontSize: '12px', color: '#374151' }}>
-                      <strong>Son Güncelleme:</strong> {new Date(autoImportStatus.lastUpdate).toLocaleString('tr-TR')}
-                    </p>
-                  )}
+                  <h4 style={{ margin: '0 0 15px 0', color: '#1e40af' }}>📁 Makine Dosya Durumları</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto' }}>
+                    {machinesList.map((machine) => {
+                      const machineKey = `makine-${machine.id}`;
+                      const machineStatus = autoImportStatus.machines?.[machineKey];
+                      
+                      return (
+                        <div key={machine.id} style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '8px 12px',
+                          background: 'rgba(255, 255, 255, 0.7)',
+                          borderRadius: '6px',
+                          fontSize: '12px'
+                        }}>
+                          <span style={{ fontWeight: '600', color: '#374151' }}>
+                            🔧 {machine.name}
+                          </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '10px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: machineStatus?.fileExists ? '#dcfce7' : '#fecaca',
+                              color: machineStatus?.fileExists ? '#166534' : '#dc2626'
+                            }}>
+                              {machineStatus?.fileExists ? '📄 Dosya Var' : '📭 Dosya Yok'}
+                            </span>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '10px',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              background: machineStatus?.isWatching ? '#dbeafe' : '#f3f4f6',
+                              color: machineStatus?.isWatching ? '#1e40af' : '#6b7280'
+                            }}>
+                              {machineStatus?.isWatching ? '👁️ İzleniyor' : '😴 Pasif'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
 
@@ -389,21 +793,32 @@ const AdminPanel = () => {
                 borderRadius: '8px',
                 border: '1px solid #e2e8f0'
               }}>
-                <h4 style={{ margin: '0 0 15px 0', color: '#374151' }}>📋 Nasıl Kullanılır?</h4>
-                <ol style={{ margin: 0, paddingLeft: '20px', color: '#6b7280' }}>
-                  <li style={{ marginBottom: '8px' }}>
-                    Excel dosyanızı proje klasöründeki <code style={{ background: '#e5e7eb', padding: '2px 6px', borderRadius: '4px' }}>auto-import/production_data.xlsx</code> konumuna kopyalayın
-                  </li>
-                  <li style={{ marginBottom: '8px' }}>
-                    Dosyayı her güncelledikçe sistem otomatik olarak algılar ve verileri işler
-                  </li>
-                  <li style={{ marginBottom: '8px' }}>
-                    Dashboard sayfası otomatik olarak güncellenir (60 saniyede bir kontrol)
-                  </li>
-                  <li>
-                    Acil durumlar için manuel yükleme de kullanılabilir
-                  </li>
-                </ol>
+                <h4 style={{ margin: '0 0 15px 0', color: '#374151' }}>📋 Çoklu Makine Sistemi Nasıl Kullanılır?</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '15px' }}>
+                  <div>
+                    <h5 style={{ margin: '0 0 8px 0', color: '#1e40af', fontSize: '14px' }}>1️⃣ Dosya Yerleştirme</h5>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#6b7280', lineHeight: '1.4' }}>
+                      Her makine için ayrı klasöre Excel dosyasını kopyalayın:<br/>
+                      <code style={{ background: '#e5e7eb', padding: '1px 4px', borderRadius: '3px' }}>
+                        auto-import/makine-X/production_data.xlsx
+                      </code>
+                    </p>
+                  </div>
+                  <div>
+                    <h5 style={{ margin: '0 0 8px 0', color: '#059669', fontSize: '14px' }}>2️⃣ Otomatik İzleme</h5>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#6b7280', lineHeight: '1.4' }}>
+                      Sistem her makineyi ayrı ayrı izler. Dosya değişince otomatik güncellenir. 
+                      Dashboard'da makine seçerek ayrı ayrı görüntüleyebilirsiniz.
+                    </p>
+                  </div>
+                  <div>
+                    <h5 style={{ margin: '0 0 8px 0', color: '#dc2626', fontSize: '14px' }}>3️⃣ Manuel Yükleme</h5>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#6b7280', lineHeight: '1.4' }}>
+                      Aşağıdaki manuel yükleme bölümünden de dosya yükleyebilirsiniz. 
+                      Hangi makineye yükleneceğini seçebilirsiniz.
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -418,6 +833,17 @@ const AdminPanel = () => {
               gap: '10px'
             }}>
               📤 Manuel Excel Dosyası Yükle
+              {selectedMachine !== 'all' && (
+                <span style={{ 
+                  fontSize: '14px', 
+                  background: '#3b82f6', 
+                  color: 'white', 
+                  padding: '4px 12px', 
+                  borderRadius: '12px' 
+                }}>
+                  Hedef: {selectedMachine.replace('makine-', 'Makine-')}
+                </span>
+              )}
             </h2>
             
             {/* Upload Area */}
@@ -449,7 +875,10 @@ const AdminPanel = () => {
                   {loading ? 'Dosya Yükleniyor ve İşleniyor...' : 'Excel Dosyasını Sürükleyin veya Seçin'}
                 </h3>
                 <p style={{ color: '#666', marginBottom: '20px' }}>
-                  {loading ? 'Lütfen bekleyin, dosya backend\'de parse ediliyor...' : 'Desteklenen formatlar: .xlsx, .xls, .csv (Max: 10MB)'}
+                  {loading ? 'Lütfen bekleyin, dosya backend\'de parse ediliyor...' : 
+                   selectedMachine === 'all' ? 
+                   'Dosyayı yüklerken hangi makineye ait olduğunu seçebilirsiniz' :
+                   `${selectedMachine.replace('makine-', 'Makine-')} için dosya yükleniyor`}
                 </p>
               </div>
               
@@ -489,6 +918,17 @@ const AdminPanel = () => {
               gap: '10px'
             }}>
               📋 Dosya Geçmişi ({uploadedFiles.length})
+              {selectedMachine !== 'all' && (
+                <span style={{ 
+                  fontSize: '14px', 
+                  background: '#8b5cf6', 
+                  color: 'white', 
+                  padding: '4px 12px', 
+                  borderRadius: '12px' 
+                }}>
+                  {selectedMachine.replace('makine-', 'Makine-')}
+                </span>
+              )}
             </h3>
             
             <div style={{ overflowX: 'auto' }}>
@@ -496,6 +936,7 @@ const AdminPanel = () => {
                 <thead>
                   <tr style={{ backgroundColor: '#f8f9fa' }}>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Dosya Adı</th>
+                    <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Makine</th>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Tip</th>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Boyut</th>
                     <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #dee2e6' }}>Satır</th>
@@ -506,13 +947,14 @@ const AdminPanel = () => {
                 <tbody>
                   {uploadedFiles.length === 0 ? (
                     <tr>
-                      <td colSpan="6" style={{ 
+                      <td colSpan="7" style={{ 
                         padding: '20px', 
                         textAlign: 'center', 
                         color: '#666',
                         border: '1px solid #dee2e6'
                       }}>
-                        📄 Henüz dosya yüklenmedi. Excel dosyası yükleyerek veya otomatik sistemi kullanarak başlayın!
+                        📄 {selectedMachine === 'all' ? 'Henüz dosya yüklenmedi' : `${selectedMachine.replace('makine-', 'Makine-')} için henüz dosya yüklenmedi`}. 
+                        Excel dosyası yükleyerek veya otomatik sistemi kullanarak başlayın!
                       </td>
                     </tr>
                   ) : (
@@ -522,6 +964,18 @@ const AdminPanel = () => {
                       }}>
                         <td style={{ padding: '12px', border: '1px solid #dee2e6', fontWeight: '500' }}>
                           {file.source === 'auto' ? '🤖' : '📄'} {file.name}
+                        </td>
+                        <td style={{ padding: '12px', border: '1px solid #dee2e6' }}>
+                          <span style={{
+                            padding: '4px 8px',
+                            borderRadius: '12px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            background: file.machineId ? '#dbeafe' : '#f3f4f6',
+                            color: file.machineId ? '#1e40af' : '#374151'
+                          }}>
+                            {file.machineId ? `🔧 Makine-${file.machineId}` : '🌐 Genel'}
+                          </span>
                         </td>
                         <td style={{ padding: '12px', border: '1px solid #dee2e6' }}>
                           <span style={{
