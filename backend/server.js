@@ -20,7 +20,8 @@ app.use(express.json());
 console.log('Middleware eklendi...');
 
 // Auto-import ana klasörünü oluştur
-const autoImportDir = './auto-import';
+const autoImportDir = String.raw`C:\Users\veysi\OneDrive\Masaüstü\veysi1\makineverileri`;
+
 if (!fs.existsSync(autoImportDir)) {
   fs.mkdirSync(autoImportDir);
   console.log('Auto-import klasörü oluşturuldu');
